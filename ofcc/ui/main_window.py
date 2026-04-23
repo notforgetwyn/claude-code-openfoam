@@ -358,6 +358,7 @@ class MainWindow(QMainWindow):
 
     def _setup_sidebar(self):
         self.sidebar_stack = []
+        self._show_sidebar_panel("explorer")
 
     def _on_activity_click(self, key: str):
         if key == "settings":
