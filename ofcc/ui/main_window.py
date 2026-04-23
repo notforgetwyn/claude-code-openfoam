@@ -17,7 +17,16 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QAction
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+
+from ofcc.core.project_manager import ProjectManager, Project
+from ofcc.core.case_manager import CaseManager, Case
+from ofcc.core.template_manager import TemplateManager
+from ofcc.ui.dialogs.new_project_dialog import NewProjectDialog
+from ofcc.ui.dialogs.new_case_dialog import NewCaseDialog
+from ofcc.infra.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -46,12 +55,16 @@ class MainWindow(QMainWindow):
     def __init__(self, of_env: Dict[str, Any]):
         super().__init__()
         self.of_env = of_env
-        self.current_case = None
-        self.current_project = None
+        self.current_case: Optional[Case] = None
+        self.current_project: Optional[Project] = None
+        self.project_manager = ProjectManager()
+        self.case_manager = CaseManager()
+        self.template_manager = TemplateManager()
         self._setup_ui()
         self._setup_menu()
         self._setup_toolbar()
         self._setup_statusbar()
+        self._refresh_project_tree()
         self._update_status()
 
     def _setup_ui(self):
@@ -75,8 +88,24 @@ class MainWindow(QMainWindow):
         self.project_tree_dock = QDockWidget("项目", self)
         self.project_tree = QTreeWidget()
         self.project_tree.setHeaderLabel("项目 / Case")
+        self.project_tree.itemDoubleClicked.connect(self._on_tree_item_double_clicked)
         self.project_tree_dock.setWidget(self.project_tree)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.project_tree_dock)
+
+    def _refresh_project_tree(self):
+        self.project_tree.clear()
+        projects = self.project_manager.get_all()
+        for project in projects:
+            project_item = QTreeWidgetItem([project.name])
+            project_item.setData(0, Qt.UserRole, {"type": "project", "id": project.id, "name": project.name})
+            cases = self.case_manager.get_by_project(project.id)
+            for case in cases:
+                case_item = QTreeWidgetItem([case.name])
+                case_item.setData(0, Qt.UserRole, {"type": "case", "id": case.id, "project_id": project.id})
+                project_item.addChild(case_item)
+            self.project_tree.addTopLevelItem(project_item)
+        self.project_tree.expandAll()
+        self.log(f"项目树已刷新，共 {len(projects)} 个项目")
 
     def _create_config_page(self) -> QWidget:
         widget = QWidget()
@@ -112,12 +141,13 @@ class MainWindow(QMainWindow):
 
         file_menu = menubar.addMenu("文件")
         file_menu.addAction("新建项目", self._on_new_project)
-        file_menu.addAction("打开项目", self._on_open_project)
+        file_menu.addAction("刷新项目", self._on_refresh_projects)
         file_menu.addSeparator()
         file_menu.addAction("退出", self.close)
 
         project_menu = menubar.addMenu("项目")
         project_menu.addAction("新建 Case", self._on_new_case)
+        project_menu.addAction("删除项目", self._on_delete_project)
         project_menu.addAction("保存", self._on_save)
 
         solver_menu = menubar.addMenu("求解器")
@@ -136,8 +166,8 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
         toolbar.addAction("新建项目", self._on_new_project)
-        toolbar.addAction("打开", self._on_open_project)
-        toolbar.addAction("保存", self._on_save)
+        toolbar.addAction("新建Case", self._on_new_case)
+        toolbar.addAction("刷新", self._on_refresh_projects)
         toolbar.addSeparator()
         toolbar.addAction("运行", self._on_run_solver)
         toolbar.addAction("停止", self._on_stop_solver)
@@ -157,34 +187,88 @@ class MainWindow(QMainWindow):
     def _update_status(self):
         if self.of_env["of_installed"]:
             self.of_version_label.setText(f"OpenFOAM: {self.of_env['version']}")
-            self.status_bar.showMessage(f"✓ {self.of_env['message']}", 3000)
         else:
             self.of_version_label.setText("OpenFOAM: 未检测到")
-            self.status_bar.showMessage(f"✗ {self.of_env['message']}", 3000)
 
         if self.current_project:
-            self.status_label.setText(f"项目: {self.current_project}")
+            self.status_label.setText(f"项目: {self.current_project.name}")
         else:
             self.status_label.setText("未打开项目")
 
-    def _on_new_project(self):
-        self.log("新建项目")
-        QMessageBox.information(self, "提示", "新建项目功能（待实现）")
+    def _on_tree_item_double_clicked(self, item, column):
+        data = item.data(0, Qt.UserRole)
+        if data and data["type"] == "case":
+            case = self.case_manager.get_by_id(data["id"])
+            if case:
+                self.current_case = case
+                self.current_project = self.project_manager.get_by_id(data["project_id"])
+                self._update_status()
+                self.log(f"选中 Case: {case.name} (求解器: {case.solver})")
 
-    def _on_open_project(self):
-        self.log("打开项目")
-        QMessageBox.information(self, "提示", "打开项目功能（待实现）")
+    def _on_new_project(self):
+        dialog = NewProjectDialog(self)
+        dialog.project_created.connect(self._create_project)
+        dialog.exec()
+
+    def _create_project(self, name: str):
+        try:
+            if self.project_manager.exists(name):
+                QMessageBox.warning(self, "警告", f"项目 '{name}' 已存在")
+                return
+            project = self.project_manager.create(name)
+            self._refresh_project_tree()
+            self.log(f"项目创建成功: {name}")
+        except Exception as e:
+            logger.error(f"创建项目失败: {e}")
+            QMessageBox.critical(self, "错误", f"创建项目失败: {e}")
 
     def _on_new_case(self):
-        self.log("新建 Case")
-        QMessageBox.information(self, "提示", "新建 Case 功能（待实现）")
+        if not self.current_project:
+            QMessageBox.warning(self, "提示", "请先在项目树中选择一个项目")
+            return
+        templates = self.template_manager.get_all()
+        dialog = NewCaseDialog(templates, self)
+        dialog.case_created.connect(lambda name, tpath: self._create_case(name, tpath))
+        dialog.exec()
+
+    def _create_case(self, name: str, template_path: str = None):
+        try:
+            case = self.case_manager.create(self.current_project.id, name, template_path)
+            self._refresh_project_tree()
+            self.log(f"Case 创建成功: {name}")
+        except Exception as e:
+            logger.error(f"创建 Case 失败: {e}")
+            QMessageBox.critical(self, "错误", f"创建 Case 失败: {e}")
+
+    def _on_delete_project(self):
+        if not self.current_project:
+            QMessageBox.warning(self, "提示", "请先在项目树中选择要删除的项目")
+            return
+        reply = QMessageBox.question(self, "确认", f"确定要删除项目 '{self.current_project.name}' 吗？此操作不可恢复。")
+        if reply == QMessageBox.Yes:
+            try:
+                self.project_manager.delete(self.current_project.id)
+                self.current_project = None
+                self.current_case = None
+                self._refresh_project_tree()
+                self._update_status()
+                self.log("项目已删除")
+            except Exception as e:
+                logger.error(f"删除项目失败: {e}")
+                QMessageBox.critical(self, "错误", f"删除项目失败: {e}")
+
+    def _on_refresh_projects(self):
+        self._refresh_project_tree()
 
     def _on_save(self):
         self.log("保存")
 
     def _on_run_solver(self):
-        self.log("运行求解")
-        QMessageBox.information(self, "提示", "运行求解功能（待实现）")
+        if not self.current_case:
+            QMessageBox.warning(self, "提示", "请先选择一个 Case")
+            return
+        self.log(f"运行求解器: {self.current_case.solver} (Case: {self.current_case.name})")
+        QMessageBox.information(self, "提示", f"运行 {self.current_case.solver} 功能（待实现）")
 
     def _on_stop_solver(self):
         self.log("停止求解")
