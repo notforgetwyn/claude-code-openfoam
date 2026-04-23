@@ -289,6 +289,12 @@ class MainWindow(QMainWindow):
         font = QFont(family, size)
         return font
 
+    def _apply_font_recursive(self, widget, font: QFont):
+        widget.setFont(font)
+        for child in widget.children():
+            if isinstance(child, QWidget):
+                self._apply_font_recursive(child, font)
+
     # ────────────────────────────────────────────────────────────────
     # Setup
     # ───────────────────────────────────────────────────────────────
@@ -296,7 +302,7 @@ class MainWindow(QMainWindow):
     def _setup_ui(self):
         self.setWindowTitle("OFCC - OpenFOAM CFD Client")
         self.setMinimumSize(1200, 800)
-        self.setFont(self._get_font())
+        self._apply_font_recursive(self, self._get_font())
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -943,7 +949,7 @@ class MainWindow(QMainWindow):
         for key, value in settings.items():
             self.settings_manager.update(key, value)
         self._apply_theme()
-        self.setFont(self._get_font())
+        self._apply_font_recursive(self, self._get_font())
         self.log("设置已应用")
 
     def _update_status(self):
