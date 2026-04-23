@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QStyleFactory,
 )
 from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent
-from PySide6.QtGui import QAction, QFont, QColor, QPainter, QBrush, QPalette
+from PySide6.QtGui import QAction, QFont, QColor, QPainter, QBrush, QPalette, QTextCursor
 
 from ofcc.core.project_manager import ProjectManager, Project
 from ofcc.core.case_manager import CaseManager, Case
@@ -483,15 +483,179 @@ class MainWindow(QMainWindow):
         pass  # 已在上方 _setup_ui 中处理
 
     def _create_config_page(self) -> QWidget:
+        from ofcc.core.parameter_manager import ParameterManager
+        from ofcc.core.config_generator import ConfigGenerator
+        self.param_manager = ParameterManager()
+
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(16, 16, 16, 16)
-        placeholder = QLabel("参数配置")
-        placeholder.setAlignment(Qt.AlignCenter)
-        placeholder.setStyleSheet("color: #999; font-size: 14pt; padding: 40px;")
-        layout.addWidget(placeholder)
+        layout.setSpacing(12)
+
+        # ── 求解器 ──
+        solver_group = QGroupBox("求解器设置")
+        solver_layout = QGridLayout()
+
+        self.solver_type_combo = QComboBox()
+        self.solver_type_combo.addItems([s[0] for s in self.param_manager.SOLVERS])
+        self.solver_type_combo.setCurrentText("simpleFoam")
+        solver_layout.addWidget(QLabel("求解器:"), 0, 0)
+        solver_layout.addWidget(self.solver_type_combo, 0, 1)
+
+        self.turbulence_combo = QComboBox()
+        self.turbulence_combo.addItems([t[0] for t in self.param_manager.TURBULENCE_MODELS])
+        self.turbulence_combo.setCurrentText("kEpsilon")
+        solver_layout.addWidget(QLabel("湍流模型:"), 1, 0)
+        solver_layout.addWidget(self.turbulence_combo, 1, 1)
+        solver_group.setLayout(solver_layout)
+        layout.addWidget(solver_group)
+
+        # ── 时间控制 ──
+        time_group = QGroupBox("时间控制")
+        time_layout = QGridLayout()
+
+        self.start_time = self._make_spinbox(0, 1e6, 0)
+        self.end_time = self._make_spinbox(1000, 1e8, 1)
+        self.delta_t = self._make_spinbox(0.001, 100, 0.001)
+        self.write_interval = self._make_spinbox(1, 1e6, 100)
+
+        time_layout.addWidget(QLabel("开始时间 (s):"), 0, 0)
+        time_layout.addWidget(self.start_time, 0, 1)
+        time_layout.addWidget(QLabel("结束时间 (s):"), 0, 2)
+        time_layout.addWidget(self.end_time, 0, 3)
+        time_layout.addWidget(QLabel("时间步长 (s):"), 1, 0)
+        time_layout.addWidget(self.delta_t, 1, 1)
+        time_layout.addWidget(QLabel("输出间隔:"), 1, 2)
+        time_layout.addWidget(self.write_interval, 1, 3)
+        time_group.setLayout(time_layout)
+        layout.addWidget(time_group)
+
+        # ── 保存/加载 ──
+        btn_layout = QHBoxLayout()
+        save_btn = QPushButton("💾 保存配置")
+        save_btn.clicked.connect(self._on_save_config)
+        load_btn = QPushButton("📂 加载配置")
+        load_btn.clicked.connect(self._on_load_config)
+        apply_btn = QPushButton("⚙ 应用到 Case")
+        apply_btn.clicked.connect(self._on_apply_config)
+        btn_layout.addWidget(save_btn)
+        btn_layout.addWidget(load_btn)
+        btn_layout.addWidget(apply_btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+        # ── 状态提示 ──
+        self.config_status = QLabel("请先选择 Case，再配置参数")
+        self.config_status.setStyleSheet("color: #999; padding: 4px;")
+        layout.addWidget(self.config_status)
+
         layout.addStretch()
         return widget
+
+    def _make_spinbox(self, min_val: float, max_val: float, default: float):
+        from PySide6.QtWidgets import QDoubleSpinBox, QSpinBox
+        if isinstance(default, int):
+            sb = QSpinBox()
+            sb.setRange(int(min_val), int(max_val))
+            sb.setValue(int(default))
+        else:
+            sb = QDoubleSpinBox()
+            sb.setRange(min_val, max_val)
+            sb.setDecimals(6)
+            sb.setValue(float(default))
+            sb.setSingleStep(max(default * 0.1, 0.001))
+        return sb
+
+    def _on_save_config(self):
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(self, "保存配置", "case_config.yaml", "YAML Files (*.yaml *.yml)")
+        if path:
+            import yaml
+            params = {
+                "solver": self.solver_type_combo.currentText(),
+                "turbulence": self.turbulence_combo.currentText(),
+                "startTime": self.start_time.value(),
+                "endTime": self.end_time.value(),
+                "deltaT": self.delta_t.value(),
+                "writeInterval": self.write_interval.value(),
+            }
+            with open(path, "w") as f:
+                yaml.dump(params, f)
+            self.log(f"配置已保存: {path}")
+
+    def _on_load_config(self):
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(self, "加载配置", "", "YAML Files (*.yaml *.yml)")
+        if path:
+            import yaml
+            with open(path) as f:
+                params = yaml.safe_load(f)
+            self.solver_type_combo.setCurrentText(params.get("solver", "simpleFoam"))
+            self.turbulence_combo.setCurrentText(params.get("turbulence", "kEpsilon"))
+            self.start_time.setValue(params.get("startTime", 0))
+            self.end_time.setValue(params.get("endTime", 1000))
+            self.delta_t.setValue(params.get("deltaT", 1))
+            self.write_interval.setValue(params.get("writeInterval", 100))
+            self.log(f"配置已加载: {path}")
+
+    def _on_apply_config(self):
+        if not self.current_case:
+            QMessageBox.warning(self, "提示", "请先选择 Case")
+            return
+        try:
+            gen = ConfigGenerator(self.current_case.path)
+            gen.generate_all(
+                solver=self.solver_type_combo.currentText(),
+                turbulence=self.turbulence_combo.currentText(),
+                start_time=self.start_time.value(),
+                end_time=self.end_time.value(),
+                delta_t=self.delta_t.value(),
+                write_interval=self.write_interval.value(),
+            )
+            self.case_manager.update_solver(self.current_case.id, self.solver_type_combo.currentText())
+            self.config_status.setText(f"✅ 配置已应用: {self.current_case.name}")
+            self.log(f"配置已应用: solver={self.solver_type_combo.currentText()}, turbulence={self.turbulence_combo.currentText()}")
+        except Exception as e:
+            logger.error(e)
+            QMessageBox.critical(self, "错误", str(e))
+
+    def _load_case_config(self, case):
+        """加载 Case 的现有配置到表单"""
+        import re
+        control = case.path / "system" / "controlDict"
+        self.config_status.setText(f"当前 Case: {case.name}")
+        if control.exists():
+            content = control.read_text()
+            # 解析关键参数
+            def extract(key):
+                m = re.search(rf'{key}\s+([^;]+);', content)
+                return m.group(1).strip() if m else None
+
+            solver = extract("application")
+            start = extract("startTime")
+            end = extract("endTime")
+            dt = extract("deltaT")
+            wi = extract("writeInterval")
+
+            if solver:
+                self.solver_type_combo.setCurrentText(solver)
+            if start:
+                try:
+                    self.start_time.setValue(float(start))
+                except: pass
+            if end:
+                try:
+                    self.end_time.setValue(float(end))
+                except: pass
+            if dt:
+                try:
+                    self.delta_t.setValue(float(dt))
+                except: pass
+            if wi:
+                try:
+                    self.write_interval.setValue(int(float(wi)))
+                except: pass
+            self.log(f"已加载 Case 配置: {case.name}")
 
     def _create_run_page(self) -> QWidget:
         widget = QWidget()
@@ -649,7 +813,8 @@ class MainWindow(QMainWindow):
                 self._update_status()
                 self._update_properties()
                 self.solver_combo.setCurrentText(case.solver)
-                self.editor_tabs.setCurrentIndex(1)
+                self._load_case_config(case)
+                self.editor_tabs.setCurrentIndex(0)  # 切换到参数配置页
                 self.log(f"选中 Case: {case.name} ({case.solver})")
 
     def _update_properties(self):
