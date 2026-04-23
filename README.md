@@ -45,7 +45,10 @@ ofcc/
 │   ├── template_manager.py   # 模板管理
 │   └── settings_manager.py  # 设置管理
 ├── ofcc/               # OpenFOAM 集成层
-│   └── environment.py   # 环境检测
+│   ├── environment.py   # 环境检测
+│   └── command_runner.py # 命令执行
+├── core/               # 核心业务层
+│   ├── task_executor.py  # 任务执行器
 ├── infra/               # 基础设施层
 │   ├── logger.py        # 日志模块
 │   └── database.py       # SQLite 数据库
@@ -64,7 +67,7 @@ ofcc/
 
 - [x] Sprint 0: 工程骨架搭建 - 主窗口、菜单、工具栏、状态栏、OpenFOAM 环境检测
 - [x] Sprint 1: 项目管理 + Case 管理 + 本地存储 - 项目增删改查、Case 生命周期、SQLite 数据库、模板管理
-- [ ] Sprint 2: OpenFOAM 命令调用 + 任务执行
+- [x] Sprint 2: OpenFOAM 命令调用 + 任务执行 - SubprocessRunner、QThread 任务执行器、实时日志
 - [ ] Sprint 3: 参数配置表单 + 配置文件生成
 - [ ] Sprint 4: 日志面板 + 结果管理
 - [ ] Sprint 5: 可视化 + 打包发布

@@ -14,14 +14,19 @@ from PySide6.QtWidgets import (
     QTreeWidget,
     QTreeWidgetItem,
     QPushButton,
+    QProgressBar,
+    QSplitter,
+    QGroupBox,
+    QComboBox,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QTextCursor
 from typing import Dict, Any, Optional
 
 from ofcc.core.project_manager import ProjectManager, Project
 from ofcc.core.case_manager import CaseManager, Case
 from ofcc.core.template_manager import TemplateManager
+from ofcc.core.task_executor import TaskExecutor, TaskStatus
 from ofcc.ui.dialogs.new_project_dialog import NewProjectDialog
 from ofcc.ui.dialogs.new_case_dialog import NewCaseDialog
 from ofcc.infra.logger import get_logger
@@ -60,12 +65,21 @@ class MainWindow(QMainWindow):
         self.project_manager = ProjectManager()
         self.case_manager = CaseManager()
         self.template_manager = TemplateManager()
+        self.task_executor = TaskExecutor()
+        self._connect_task_signals()
         self._setup_ui()
         self._setup_menu()
         self._setup_toolbar()
         self._setup_statusbar()
         self._refresh_project_tree()
         self._update_status()
+
+    def _connect_task_signals(self):
+        self.task_executor.task_started.connect(self._on_task_started)
+        self.task_executor.task_output.connect(self._on_task_output)
+        self.task_executor.task_error.connect(self._on_task_error)
+        self.task_executor.task_status.connect(self._on_task_status_changed)
+        self.task_executor.task_finished.connect(self._on_task_finished)
 
     def _setup_ui(self):
         self.setWindowTitle("OFCC - OpenFOAM CFD Client")
@@ -100,7 +114,9 @@ class MainWindow(QMainWindow):
             project_item.setData(0, Qt.UserRole, {"type": "project", "id": project.id, "name": project.name})
             cases = self.case_manager.get_by_project(project.id)
             for case in cases:
-                case_item = QTreeWidgetItem([case.name])
+                status = case.status
+                display_name = f"{case.name} [{status}]"
+                case_item = QTreeWidgetItem([display_name])
                 case_item.setData(0, Qt.UserRole, {"type": "case", "id": case.id, "project_id": project.id})
                 project_item.addChild(case_item)
             self.project_tree.addTopLevelItem(project_item)
@@ -117,13 +133,60 @@ class MainWindow(QMainWindow):
     def _create_run_page(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.addWidget(QLabel("求解运行页面 - 运行控制、进度显示"))
+
+        # 求解器控制区
+        control_group = QGroupBox("求解运行控制")
+        control_layout = QHBoxLayout()
+
+        self.solver_combo = QComboBox()
+        self.solver_combo.addItems(["blockMesh", "simpleFoam", "pisoFoam", "icoFoam", "snappyHexMesh"])
+
+        self.run_btn = QPushButton("▶ 运行")
+        self.run_btn.clicked.connect(self._on_run_solver)
+        self.stop_btn = QPushButton("■ 停止")
+        self.stop_btn.clicked.connect(self._on_stop_solver)
+        self.stop_btn.setEnabled(False)
+
+        control_layout.addWidget(QLabel("求解器:"))
+        control_layout.addWidget(self.solver_combo)
+        control_layout.addWidget(self.run_btn)
+        control_layout.addWidget(self.stop_btn)
+        control_layout.addStretch()
+
+        control_group.setLayout(control_layout)
+        layout.addWidget(control_group)
+
+        # 进度条
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+
+        # 实时日志预览
+        self.run_log = QTextEdit()
+        self.run_log.setReadOnly(True)
+        self.run_log.setMaximumHeight(200)
+        layout.addWidget(QLabel("运行日志:"))
+        layout.addWidget(self.run_log)
+
         layout.addStretch()
         return widget
 
     def _create_log_page(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
+
+        toolbar = QHBoxLayout()
+        self.clear_log_btn = QPushButton("清空日志")
+        self.clear_log_btn.clicked.connect(lambda: self.log_text.clear())
+        self.export_log_btn = QPushButton("导出日志")
+        self.export_log_btn.clicked.connect(self._on_export_log)
+        toolbar.addWidget(self.clear_log_btn)
+        toolbar.addWidget(self.export_log_btn)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         layout.addWidget(self.log_text)
@@ -204,6 +267,7 @@ class MainWindow(QMainWindow):
                 self.current_project = self.project_manager.get_by_id(data["project_id"])
                 self._update_status()
                 self.log(f"选中 Case: {case.name} (求解器: {case.solver})")
+                self.solver_combo.setCurrentText(case.solver)
 
     def _on_new_project(self):
         dialog = NewProjectDialog(self)
@@ -265,13 +329,69 @@ class MainWindow(QMainWindow):
 
     def _on_run_solver(self):
         if not self.current_case:
-            QMessageBox.warning(self, "提示", "请先选择一个 Case")
+            QMessageBox.warning(self, "提示", "请先在项目树中选择一个 Case")
             return
-        self.log(f"运行求解器: {self.current_case.solver} (Case: {self.current_case.name})")
-        QMessageBox.information(self, "提示", f"运行 {self.current_case.solver} 功能（待实现）")
+
+        solver = self.solver_combo.currentText()
+        case = self.current_case
+
+        self.log(f"启动求解器: {solver}, Case: {case.name}")
+        self.run_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.task_label.setText(f"任务: 运行中")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+
+        self.task_executor.start_task(case.id, solver, case.path)
 
     def _on_stop_solver(self):
-        self.log("停止求解")
+        if self.current_case:
+            self.task_executor.stop_task(self.current_case.id)
+            self.log("请求停止任务...")
+
+    def _on_task_started(self, case_id: str):
+        self.log(f"[任务开始] case_id={case_id}")
+
+    def _on_task_output(self, case_id: str, line: str):
+        self.run_log.append(line)
+        self.log_text.append(line)
+        self.run_log.moveCursor(QTextCursor.End)
+        self.log_text.moveCursor(QTextCursor.End)
+
+    def _on_task_error(self, case_id: str, line: str):
+        self.run_log.append(f"<font color='red'>{line}</font>")
+        self.log_text.append(f"<font color='red'>{line}</font>")
+        self.run_log.moveCursor(QTextCursor.End)
+        self.log_text.moveCursor(QTextCursor.End)
+
+    def _on_task_status_changed(self, case_id: str, status: str):
+        self.task_label.setText(f"任务: {status}")
+        if self.current_case and self.current_case.id == case_id:
+            self.case_manager.update_status(case_id, status)
+            self._refresh_project_tree()
+
+    def _on_task_finished(self, case_id: str, returncode: int, stdout: str, stderr: str):
+        self.run_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.progress_bar.setVisible(False)
+
+        if returncode == 0:
+            self.log(f"[任务完成] case_id={case_id}, returncode=0")
+        else:
+            self.log(f"[任务失败] case_id={case_id}, returncode={returncode}")
+
+        if self.current_case and self.current_case.id == case_id:
+            status = "completed" if returncode == 0 else "failed"
+            self.case_manager.update_status(case_id, status)
+            self._refresh_project_tree()
+
+    def _on_export_log(self):
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(self, "导出日志", "ofcc_log.txt", "Text Files (*.txt)")
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.log_text.toPlainText())
+            self.log(f"日志已导出: {path}")
 
     def _on_settings(self):
         QMessageBox.information(self, "提示", "设置功能（待实现）")
@@ -288,3 +408,4 @@ class MainWindow(QMainWindow):
 
     def log(self, message: str):
         self.log_text.append(f"[INFO] {message}")
+        self.log_text.moveCursor(QTextCursor.End)
