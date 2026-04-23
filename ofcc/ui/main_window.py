@@ -4,10 +4,12 @@ from PySide6.QtWidgets import (
     QMessageBox, QTabWidget, QLabel, QTextEdit,
     QTreeWidget, QTreeWidgetItem, QPushButton, QProgressBar,
     QGroupBox, QComboBox, QListWidget, QSplitter,
-    QFrame, QSizePolicy, QSpacerItem,
+    QFrame, QSizePolicy, QSpacerItem, QScrollArea,
+    QAbstractItemView, QStyledItemDelegate, QStyleOption,
+    QStyleFactory,
 )
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QAction, QIcon, QTextCursor, QFont
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent
+from PySide6.QtGui import QAction, QFont, QColor, QPainter, QBrush, QPalette
 
 from ofcc.core.project_manager import ProjectManager, Project
 from ofcc.core.case_manager import CaseManager, Case
@@ -17,50 +19,97 @@ from ofcc.core.settings_manager import SettingsManager
 from ofcc.ui.dialogs.new_project_dialog import NewProjectDialog
 from ofcc.ui.dialogs.new_case_dialog import NewCaseDialog
 from ofcc.ui.dialogs.tutorial_dialog import TutorialDialog
+from ofcc.ui.dialogs.settings_dialog import SettingsDialog
 from ofcc.infra.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-class ActivityBarButton(QPushButton):
-    """活动栏图标按钮"""
-    def __init__(self, icon_char: str, tooltip: str, parent=None):
+class ActivityBar(QFrame):
+    """VS Code 风格活动栏"""
+    clicked = Signal(str)
+
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setText(icon_char)
-        self.setToolTip(tooltip)
-        self.setFixedSize(48, 48)
-        self.setCheckable(True)
-        self.setFlat(True)
+        self.setFixedWidth(48)
+        self.setFrameShape(QFrame.NoFrame)
+        self.buttons = {}
+        self._active = "explorer"
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 8, 0, 8)
+        layout.setSpacing(8)
+
+        icons = [
+            ("explorer", "📁"),
+            ("search", "🔍"),
+            ("git", "🐙"),
+            ("simulation", "▶"),
+        ]
+
+        for key, emoji in icons:
+            btn = QPushButton(emoji)
+            btn.setFixedSize(40, 40)
+            btn.setFlat(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda checked, k=key: self._on_click(k))
+            self.buttons[key] = btn
+            layout.addWidget(btn)
+
+        layout.addStretch()
+
+        # 设置按钮放底部
+        settings_btn = QPushButton("⚙")
+        settings_btn.setFixedSize(40, 40)
+        settings_btn.setFlat(True)
+        settings_btn.setCursor(Qt.PointingHandCursor)
+        settings_btn.clicked.connect(lambda: self.clicked.emit("settings"))
+        self.buttons["settings"] = settings_btn
+        layout.addWidget(settings_btn)
+
+        self._update_active("explorer")
+
+    def _on_click(self, key: str):
+        self._active = key
+        self._update_active(key)
+        self.clicked.emit(key)
+
+    def _update_active(self, key: str):
+        for k, btn in self.buttons.items():
+            btn.setStyleSheet(
+                "QPushButton { background-color: transparent; border: none; border-radius: 4px; }"
+                "QPushButton:hover { background-color: rgba(255,255,255,0.1); }"
+                f"QPushButton:checked, QPushButton[active=true] {{ background-color: rgba(255,255,255,0.15); border-left: 2px solid #0078D4; }}"
+            ) if key == "dark" else btn.setStyleSheet("")
+            btn.setProperty("active", k == key)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+
+class BreadcrumbBar(QFrame):
+    """面包屑导航栏"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(28)
+        self.setStyleSheet("background-color: rgba(0,0,0,0.05); border-bottom: 1px solid rgba(0,0,0,0.1);")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 0, 8, 0)
+        self.label = QLabel("OFCC")
+        self.label.setStyleSheet("color: #666; font-size: 12px;")
+        layout.addWidget(self.label)
+
+    def set_path(self, project_name: str = None, case_name: str = None):
+        if project_name and case_name:
+            self.label.setText(f"OFCC › {project_name} › {case_name}")
+        elif project_name:
+            self.label.setText(f"OFCC › {project_name}")
+        else:
+            self.label.setText("OFCC")
 
 
 class MainWindow(QMainWindow):
-    """
-    OFCC 主窗口 - VS Code 风格布局
-
-    ┌─────────────────────────────────────────────────────────────────┐
-    │  标题栏（菜单）                                    ─ □ ✕ │
-    ├────┬───────────────────────────────────┬────────────────────┤
-    │ 活 │  选项卡栏（config / run / log）     │                    │
-    │ 动 │ ┌───────────────────────────────┐   │                    │
-    │ 栏 │ │                               │   │                    │
-    │    │ │         编辑器区域              │   │                    │
-    │ 📁 │ │                               │   │                    │
-    │ 🔍 │ └───────────────────────────────┘   │                    │
-    │ 🐛 │                                    │                    │
-    │ ⚙  ├───────────────────────────────────┤                    │
-    │    │  面板（终端 / 日志 / 问题）          │                    │
-    ├────┴───────────────────────────────────┴────────────────────┤
-    │  状态栏：分支 / 求解器 / 行号 / OF 版本                      │
-    └─────────────────────────────────────────────────────────────┘
-    """
-
-    ACTIVITY_ICONS = {
-        "explorer": "📁",
-        "search": "🔍",
-        "git": "🐙",
-        "simulation": "▶",
-        "settings": "⚙",
-    }
 
     def __init__(self, of_env):
         super().__init__()
@@ -76,10 +125,8 @@ class MainWindow(QMainWindow):
         self.task_executor = TaskExecutor()
         self.settings_manager = SettingsManager()
 
-        # Connect signals
         self._connect_task_signals()
-
-        # Setup
+        self._apply_theme()
         self._setup_ui()
         self._setup_menu()
         self._setup_activity_bar()
@@ -87,247 +134,439 @@ class MainWindow(QMainWindow):
         self._setup_editor_tabs()
         self._setup_panel()
         self._setup_statusbar()
-
         self._refresh_project_tree()
         self._update_status()
         self._show_tutorial_if_needed()
 
     # ────────────────────────────────────────────────────────────────
-    # UI Setup
+    # Theme
+    # ───────────────────────────────────────────────────────────────
+
+    def _apply_theme(self):
+        theme = self.settings_manager.get("theme", "浅色")
+        if theme == "深色":
+            self.setStyleSheet(self._dark_stylesheet())
+            self.setPalette(self._dark_palette())
+        elif theme == "浅色":
+            self.setStyleSheet(self._light_stylesheet())
+            self.setPalette(self._light_palette())
+        else:
+            # 跟随系统，使用浅色
+            self.setStyleSheet(self._light_stylesheet())
+
+    def _light_palette(self) -> QPalette:
+        p = self.palette()
+        p.setColor(QPalette.Window, QColor("#FFFFFF"))
+        p.setColor(QPalette.WindowText, QColor("#333333"))
+        p.setColor(QPalette.Base, QColor("#FFFFFF"))
+        p.setColor(QPalette.AlternateBase, QColor("#F5F5F5"))
+        p.setColor(QPalette.ToolTipBase, QColor("#FFFFEC"))
+        p.setColor(QPalette.Text, QColor("#333333"))
+        p.setColor(QPalette.Button, QColor("#F0F0F0"))
+        p.setColor(QPalette.ButtonText, QColor("#333333"))
+        p.setColor(QPalette.BrightText, QColor("#FFFFFF"))
+        p.setColor(QPalette.Highlight, QColor("#0078D4"))
+        p.setColor(QPalette.HighlightedText, QColor("#FFFFFF"))
+        return p
+
+    def _dark_palette(self) -> QPalette:
+        p = self.palette()
+        p.setColor(QPalette.Window, QColor("#1E1E1E"))
+        p.setColor(QPalette.WindowText, QColor("#CCCCCC"))
+        p.setColor(QPalette.Base, QColor("#252526"))
+        p.setColor(QPalette.AlternateBase, QColor("#2D2D30"))
+        p.setColor(QPalette.ToolTipBase, QColor("#3E3E42"))
+        p.setColor(QPalette.Text, QColor("#CCCCCC"))
+        p.setColor(QPalette.Button, QColor("#3C3C3C"))
+        p.setColor(QPalette.ButtonText, QColor("#CCCCCC"))
+        p.setColor(QPalette.BrightText, QColor("#FFFFFF"))
+        p.setColor(QPalette.Highlight, QColor("#0078D4"))
+        p.setColor(QPalette.HighlightedText, QColor("#FFFFFF"))
+        return p
+
+    def _light_stylesheet(self) -> str:
+        return """
+            QMainWindow { background-color: #FFFFFF; }
+            QWidget { font-family: "Microsoft YaHei", "Segoe UI", sans-serif; font-size: 10pt; }
+            QLabel { color: #333333; }
+            QPushButton {
+                background-color: #F0F0F0; border: 1px solid #CCCCCC;
+                border-radius: 4px; padding: 4px 12px; color: #333333;
+            }
+            QPushButton:hover { background-color: #E0E0E0; }
+            QPushButton:pressed { background-color: #D0D0D0; }
+            QPushButton:disabled { background-color: #F5F5F5; color: #AAAAAA; }
+            QComboBox {
+                background-color: #FFFFFF; border: 1px solid #CCCCCC;
+                border-radius: 4px; padding: 2px 8px;
+            }
+            QComboBox:hover { border-color: #0078D4; }
+            QGroupBox { border: 1px solid #DDDDDD; border-radius: 4px; margin-top: 8px; font-weight: bold; }
+            QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; color: #333333; }
+            QTabWidget::pane { border: 1px solid #DDDDDD; }
+            QTabBar::tab {
+                background-color: #F0F0F0; border: 1px solid #DDDDDD;
+                padding: 6px 16px; margin-right: 2px;
+            }
+            QTabBar::tab:selected { background-color: #FFFFFF; border-bottom: 2px solid #0078D4; }
+            QTabBar::tab:hover { background-color: #E8E8E8; }
+            QProgressBar { border: 1px solid #CCCCCC; border-radius: 4px; text-align: center; }
+            QProgressBar::chunk { background-color: #0078D4; border-radius: 3px; }
+            QTreeWidget, QListWidget {
+                background-color: #FFFFFF; border: 1px solid #DDDDDD;
+                outline: none;
+            }
+            QTreeWidget::item:hover, QListWidget::item:hover { background-color: #F0F0F0; }
+            QTreeWidget::item:selected, QListWidget::item:selected { background-color: #0078D4; color: white; }
+            QDockWidget { border: 1px solid #DDDDDD; }
+            QStatusBar { background-color: #F0F0F0; color: #666666; }
+            QMenuBar { background-color: #F0F0F0; border-bottom: 1px solid #DDDDDD; }
+            QMenuBar::item { padding: 4px 12px; }
+            QMenuBar::item:selected { background-color: #E0E0E0; }
+            QMenu { background-color: #FFFFFF; border: 1px solid #DDDDDD; }
+            QMenu::item:selected { background-color: #0078D4; color: white; }
+            QSplitter::handle { background-color: #DDDDDD; }
+            QToolBar { background-color: #F5F5F5; border-bottom: 1px solid #DDDDDD; spacing: 4px; }
+            QToolTip { background-color: #FFFFEC; border: 1px solid #DDDDDD; color: #333333; }
+            QTextEdit { background-color: #FFFFFF; border: 1px solid #DDDDDD; color: #333333; }
+            QScrollBar:vertical { width: 10px; background: #F0F0F0; }
+            QScrollBar::handle:vertical { background: #C0C0C0; border-radius: 4px; }
+            QScrollBar::handle:vertical:hover { background: #A0A0A0; }
+        """
+
+    def _dark_stylesheet(self) -> str:
+        return """
+            QMainWindow { background-color: #1E1E1E; color: #CCCCCC; }
+            QWidget { font-family: "Microsoft YaHei", "Segoe UI", sans-serif; font-size: 10pt; color: #CCCCCC; }
+            QPushButton {
+                background-color: #3C3C3C; border: 1px solid #555555;
+                border-radius: 4px; padding: 4px 12px; color: #CCCCCC;
+            }
+            QPushButton:hover { background-color: #4A4A4A; }
+            QPushButton:pressed { background-color: #505050; }
+            QPushButton:disabled { background-color: #2D2D2D; color: #666666; }
+            QComboBox {
+                background-color: #2D2D2D; border: 1px solid #555555;
+                border-radius: 4px; padding: 2px 8px; color: #CCCCCC;
+            }
+            QComboBox:hover { border-color: #0078D4; }
+            QGroupBox { border: 1px solid #555555; border-radius: 4px; margin-top: 8px; font-weight: bold; color: #CCCCCC; }
+            QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; color: #CCCCCC; }
+            QTabWidget::pane { border: 1px solid #3C3C3C; background-color: #1E1E1E; }
+            QTabBar::tab {
+                background-color: #2D2D2D; border: 1px solid #3C3C3C;
+                padding: 6px 16px; margin-right: 2px; color: #AAAAAA;
+            }
+            QTabBar::tab:selected { background-color: #1E1E1E; border-bottom: 2px solid #0078D4; color: #FFFFFF; }
+            QTabBar::tab:hover { background-color: #383838; }
+            QProgressBar { border: 1px solid #555555; border-radius: 4px; text-align: center; background-color: #2D2D2D; }
+            QProgressBar::chunk { background-color: #0078D4; border-radius: 3px; }
+            QTreeWidget, QListWidget {
+                background-color: #252526; border: 1px solid #3C3C3C;
+                color: #CCCCCC; outline: none;
+            }
+            QTreeWidget::item:hover, QListWidget::item:hover { background-color: #2A2D2E; }
+            QTreeWidget::item:selected, QListWidget::item:selected { background-color: #094771; color: white; }
+            QDockWidget { border: 1px solid #3C3C3C; background-color: #252526; color: #CCCCCC; }
+            QStatusBar { background-color: #007ACC; color: #FFFFFF; }
+            QMenuBar { background-color: #2D2D30; border-bottom: 1px solid #3C3C3C; color: #CCCCCC; }
+            QMenuBar::item { padding: 4px 12px; }
+            QMenuBar::item:selected { background-color: #3E3E42; }
+            QMenu { background-color: #2D2D2D; border: 1px solid #555555; color: #CCCCCC; }
+            QMenu::item:selected { background-color: #094771; color: white; }
+            QSplitter::handle { background-color: #3C3C3C; }
+            QToolBar { background-color: #2D2D30; border-bottom: 1px solid #3C3C3C; spacing: 4px; }
+            QToolTip { background-color: #3E3E42; border: 1px solid #555555; color: #CCCCCC; }
+            QTextEdit { background-color: #1E1E1E; border: 1px solid #3C3C3C; color: #CCCCCC; }
+            QScrollBar:vertical { width: 10px; background: #2D2D2D; }
+            QScrollBar::handle:vertical { background: #424242; border-radius: 4px; }
+            QScrollBar::handle:vertical:hover { background: #4F4F4F; }
+        """
+
+    def _get_font(self) -> QFont:
+        family = self.settings_manager.get("font_family", "Microsoft YaHei")
+        size = self.settings_manager.get("font_size", 10)
+        font = QFont(family, size)
+        return font
+
+    # ────────────────────────────────────────────────────────────────
+    # Setup
     # ───────────────────────────────────────────────────────────────
 
     def _setup_ui(self):
         self.setWindowTitle("OFCC - OpenFOAM CFD Client")
         self.setMinimumSize(1200, 800)
+        self.setFont(self._get_font())
 
-        # Central widget: horizontal splitter (sidebar + editor + right sidebar)
         central = QWidget()
         self.setCentralWidget(central)
-        central_layout = QHBoxLayout(central)
+        central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
 
+        # 主分割器（侧边栏 + 编辑器）
         self.main_splitter = QSplitter(Qt.Horizontal)
 
-        # Sidebar (left, activity bar is overlaid on this)
+        # 侧边栏
         self.sidebar = QDockWidget()
         self.sidebar.setFeatures(QDockWidget.NoDockWidgetFeatures)
-        self.sidebar.setTitleBarWidget(QWidget())  # hide title
+        self.sidebar.setTitleBarWidget(QWidget())
         self.main_splitter.addWidget(self.sidebar)
 
-        # Editor area (center)
+        # 编辑器容器
         self.editor_container = QWidget()
-        editor_layout = QVBoxLayout(self.editor_container)
-        editor_layout.setContentsMargins(0, 0, 0, 0)
-        editor_layout.setSpacing(0)
+        editor_vbox = QVBoxLayout(self.editor_container)
+        editor_vbox.setContentsMargins(0, 0, 0, 0)
+        editor_vbox.setSpacing(0)
+
+        # 面包屑
+        self.breadcrumb = BreadcrumbBar()
+        editor_vbox.addWidget(self.breadcrumb)
+
+        # 选项卡
+        self.editor_tabs = QTabWidget()
+        self.editor_tabs.addTab(self._create_config_page(), "⚙ 参数配置")
+        self.editor_tabs.addTab(self._create_run_page(), "▶ 求解运行")
+        self.editor_tabs.addTab(self._create_log_page(), "📋 日志")
+        self.editor_tabs.addTab(self._create_result_page(), "📊 结果")
+        editor_vbox.addWidget(self.editor_tabs)
+
         self.main_splitter.addWidget(self.editor_container)
 
-        # Right sidebar (properties panel)
-        self.right_sidebar = QDockWidget("属性")
+        # 右侧属性栏
+        self.right_sidebar = QDockWidget()
         self.right_sidebar.setFeatures(QDockWidget.NoDockWidgetFeatures | QDockWidget.DockWidgetClosable)
-        self.right_sidebar.setMaximumWidth(280)
+        self.right_sidebar.setMaximumWidth(260)
         self._setup_right_sidebar()
         self.addDockWidget(Qt.RightDockWidgetArea, self.right_sidebar)
 
-        central_layout.addWidget(self.main_splitter)
-
-        # Panel (bottom, integrated with main window)
+        # 底部面板
         self.panel_dock = QDockWidget()
         self.panel_dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
         self.panel_dock.setTitleBarWidget(QWidget())
         self.addDockWidget(Qt.BottomDockWidgetArea, self.panel_dock)
 
+        central_layout.addWidget(self.main_splitter)
+
+        self.main_splitter.setSizes([240, 900])
+
     def _setup_activity_bar(self):
-        """左侧活动栏"""
-        self.activity_bar = QFrame()
-        self.activity_bar.setFixedWidth(48)
-        self.activity_bar.setFrameShape(QFrame.StyledPanel)
-        activity_layout = QVBoxLayout(self.activity_bar)
-        activity_layout.setContentsMargins(4, 8, 4, 4)
-        activity_layout.setSpacing(4)
-
-        self.activity_buttons = {}
-        for key, char in self.ACTIVITY_ICONS.items():
-            btn = ActivityBarButton(char, key.capitalize())
-            btn.setChecked(key == "explorer")
-            btn.clicked.connect(lambda checked, k=key: self._on_activity_click(k))
-            self.activity_buttons[key] = btn
-            activity_layout.addWidget(btn)
-
-        activity_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
-
-        # Place activity bar over sidebar
+        self.activity_bar = ActivityBar()
+        self.activity_bar.clicked.connect(self._on_activity_click)
         self.activity_bar.setParent(self)
-        self.activity_bar.move(0, 0)
         self.activity_bar.show()
 
     def _setup_sidebar(self):
-        """侧边栏 - 项目资源管理器"""
-        self.sidebar.setWidget(self._create_explorer_panel())
-        self._update_sidebar_visibility()
+        self.sidebar_stack = []
+
+    def _on_activity_click(self, key: str):
+        if key == "settings":
+            self._on_settings()
+            return
+        self.active_panel = key
+        self._show_sidebar_panel(key)
+
+    def _show_sidebar_panel(self, key: str):
+        for i in range(self.sidebar_stack.__len__()):
+            w = self.sidebar_stack[i]
+            if w:
+                w.hide()
+        if key == "explorer":
+            panel = self._create_explorer_panel()
+        elif key == "search":
+            panel = self._create_search_panel()
+        elif key == "git":
+            panel = self._create_git_panel()
+        elif key == "simulation":
+            panel = self._create_simulation_panel()
+        else:
+            panel = QWidget()
+            QVBoxLayout(panel).addWidget(QLabel(f"{key} 面板"))
+        self.sidebar.setWidget(panel)
+        self.sidebar.show()
 
     def _create_explorer_panel(self) -> QWidget:
-        """项目浏览器面板"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
 
-        # 标题栏
-        title = QLabel("  项目浏览器")
-        title.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
-        title.setFixedHeight(28)
-        layout.addWidget(title)
+        # 标题行
+        title_row = QHBoxLayout()
+        title = QLabel("项目浏览器")
+        title.setStyleSheet("font-weight: bold; font-size: 11px; color: #666;")
+        title_row.addWidget(title)
+        title_row.addStretch()
 
-        # 工具栏
-        toolbar_layout = QHBoxLayout()
-        new_proj_btn = QPushButton("新建项目")
-        new_proj_btn.setFixedHeight(24)
-        new_proj_btn.clicked.connect(self._on_new_project)
-        new_case_btn = QPushButton("新建Case")
-        new_case_btn.setFixedHeight(24)
-        new_case_btn.clicked.connect(self._on_new_case)
-        toolbar_layout.addWidget(new_proj_btn)
-        toolbar_layout.addWidget(new_case_btn)
-        toolbar_layout.addStretch()
-        layout.addLayout(toolbar_layout)
+        refresh_btn = QPushButton("↻")
+        refresh_btn.setFixedSize(22, 22)
+        refresh_btn.setFlat(True)
+        refresh_btn.setToolTip("刷新")
+        refresh_btn.clicked.connect(self._on_refresh_projects)
+        title_row.addWidget(refresh_btn)
+        layout.addLayout(title_row)
+
+        # 操作按钮
+        btn_row = QHBoxLayout()
+        new_proj = QPushButton("新建项目")
+        new_proj.setFixedHeight(24)
+        new_proj.clicked.connect(self._on_new_project)
+        new_case = QPushButton("新建Case")
+        new_case.setFixedHeight(24)
+        new_case.clicked.connect(self._on_new_case)
+        btn_row.addWidget(new_proj)
+        btn_row.addWidget(new_case)
+        layout.addLayout(btn_row)
 
         # 项目树
         self.project_tree = QTreeWidget()
-        self.project_tree.setHeaderLabel("项目 / Case")
+        self.project_tree.setHeaderLabel("")
+        self.project_tree.setAlternatingRowColors(True)
         self.project_tree.itemDoubleClicked.connect(self._on_tree_item_double_clicked)
+        self.project_tree.setIndentation(16)
+        self.project_tree.setRootIsDecorated(True)
         layout.addWidget(self.project_tree)
 
         return widget
 
     def _create_search_panel(self) -> QWidget:
-        """搜索面板"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        title = QLabel("  搜索")
-        title.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
-        title.setFixedHeight(28)
-        layout.addWidget(title)
-        layout.addWidget(QLabel("（搜索功能待实现）"))
+        layout.setContentsMargins(8, 8, 8, 8)
+        search_label = QLabel("搜索面板（Ctrl+Shift+F）")
+        search_label.setAlignment(Qt.AlignCenter)
+        search_label.setStyleSheet("color: #999; padding: 20px;")
+        layout.addWidget(search_label)
+        layout.addStretch()
+        return widget
+
+    def _create_git_panel(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        git_label = QLabel("Git 面板")
+        git_label.setAlignment(Qt.AlignCenter)
+        git_label.setStyleSheet("color: #999; padding: 20px;")
+        layout.addWidget(git_label)
         layout.addStretch()
         return widget
 
     def _create_simulation_panel(self) -> QWidget:
-        """仿真控制面板"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        title = QLabel("  仿真控制")
-        title.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
-        title.setFixedHeight(28)
-        layout.addWidget(title)
-
-        if self.current_case:
-            layout.addWidget(QLabel(f"Case: {self.current_case.name}"))
-            layout.addWidget(QLabel(f"求解器: {self.current_case.solver}"))
-            layout.addWidget(QLabel(f"状态: {self.current_case.status}"))
-        else:
-            layout.addWidget(QLabel("请先选择一个 Case"))
-
+        layout.setContentsMargins(8, 8, 8, 8)
+        sim_label = QLabel("仿真控制面板")
+        sim_label.setAlignment(Qt.AlignCenter)
+        sim_label.setStyleSheet("color: #999; padding: 20px;")
+        layout.addWidget(sim_label)
         layout.addStretch()
         return widget
 
+    def _setup_right_sidebar(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        title = QLabel("属性")
+        title.setStyleSheet("font-weight: bold; font-size: 11px; color: #666; border-bottom: 1px solid #DDD; padding-bottom: 4px;")
+        layout.addWidget(title)
+
+        self.props_label = QLabel("选择 Case 查看属性")
+        self.props_label.setStyleSheet("color: #999; font-size: 9pt;")
+        layout.addWidget(self.props_label)
+        layout.addStretch()
+
+        self.right_sidebar.setWidget(widget)
+
     def _setup_editor_tabs(self):
-        """编辑器选项卡区"""
-        self.editor_tabs = QTabWidget()
-        self.editor_tabs.setTabsClosable(True)
-
-        # 参数配置页
-        self.config_editor = self._create_config_page()
-        self.editor_tabs.addTab(self.config_editor, "参数配置")
-
-        # 求解运行页
-        self.run_editor = self._create_run_page()
-        self.editor_tabs.addTab(self.run_editor, "求解运行")
-
-        # 日志页（可编辑 OpenFOAM 日志）
-        self.log_editor = self._create_log_page()
-        self.editor_tabs.addTab(self.log_editor, "日志")
-
-        # 结果页
-        self.result_editor = self._create_result_page()
-        self.editor_tabs.addTab(self.result_editor, "结果")
-
-        self.editor_tabs.widget(1).layout().addWidget(self._create_run_controls())
-
-        self.editor_container.layout().addWidget(self.editor_tabs)
+        pass  # 已在上方 _setup_ui 中处理
 
     def _create_config_page(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.addWidget(QLabel("参数配置 - 编辑 OpenFOAM 配置文件（待实现）"))
+        layout.setContentsMargins(16, 16, 16, 16)
+        placeholder = QLabel("参数配置")
+        placeholder.setAlignment(Qt.AlignCenter)
+        placeholder.setStyleSheet("color: #999; font-size: 14pt; padding: 40px;")
+        layout.addWidget(placeholder)
         layout.addStretch()
         return widget
 
     def _create_run_page(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.addWidget(QLabel("求解运行 - 选择求解器并执行（待实现）"))
-        layout.addStretch()
-        return widget
+        layout.setContentsMargins(16, 16, 16, 16)
 
-    def _create_run_controls(self) -> QWidget:
-        """求解运行控制条（底部面板区）"""
-        group = QGroupBox("求解运行控制")
-        hl = QHBoxLayout()
+        # 控制条
+        ctrl = QGroupBox("求解运行控制")
+        ctrl_layout = QHBoxLayout()
 
         self.solver_combo = QComboBox()
         self.solver_combo.addItems(["blockMesh", "simpleFoam", "pisoFoam", "icoFoam", "snappyHexMesh"])
-
         self.run_btn = QPushButton("▶ 运行")
         self.run_btn.setFixedWidth(80)
         self.run_btn.clicked.connect(self._on_run_solver)
-
         self.stop_btn = QPushButton("■ 停止")
         self.stop_btn.setFixedWidth(80)
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self._on_stop_solver)
-
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedWidth(200)
+        self.progress_bar.setVisible(False)
 
-        hl.addWidget(QLabel("求解器:"))
-        hl.addWidget(self.solver_combo)
-        hl.addWidget(self.run_btn)
-        hl.addWidget(self.stop_btn)
-        hl.addWidget(self.progress_bar)
-        hl.addStretch()
+        ctrl_layout.addWidget(QLabel("求解器:"))
+        ctrl_layout.addWidget(self.solver_combo)
+        ctrl_layout.addWidget(self.run_btn)
+        ctrl_layout.addWidget(self.stop_btn)
+        ctrl_layout.addWidget(self.progress_bar)
+        ctrl_layout.addStretch()
+        ctrl.setLayout(ctrl_layout)
+        layout.addWidget(ctrl)
 
-        group.setLayout(hl)
-        return group
+        # 运行日志
+        log_label = QLabel("运行日志")
+        log_label.setStyleSheet("font-weight: bold; color: #666; padding: 4px 0;")
+        layout.addWidget(log_label)
+        self.run_log = QTextEdit()
+        self.run_log.setReadOnly(True)
+        self.run_log.setFont(QFont("Consolas", 9))
+        layout.addWidget(self.run_log)
+        return widget
 
     def _create_log_page(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setContentsMargins(16, 16, 16, 16)
 
         toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel("日志"))
+        toolbar.addStretch()
         clear_btn = QPushButton("清空")
         clear_btn.clicked.connect(lambda: self.log_text.clear())
         export_btn = QPushButton("导出")
         export_btn.clicked.connect(self._on_export_log)
         toolbar.addWidget(clear_btn)
         toolbar.addWidget(export_btn)
-        toolbar.addStretch()
         layout.addLayout(toolbar)
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
+        self.log_text.setFont(QFont("Consolas", 9))
         layout.addWidget(self.log_text)
-
         return widget
 
     def _create_result_page(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.addWidget(QLabel("结果 - 后处理与可视化（待实现）"))
+        layout.setContentsMargins(16, 16, 16, 16)
+        placeholder = QLabel("结果可视化")
+        placeholder.setAlignment(Qt.AlignCenter)
+        placeholder.setStyleSheet("color: #999; font-size: 14pt; padding: 40px;")
+        layout.addWidget(placeholder)
         layout.addStretch()
         return widget
 
     def _setup_panel(self):
-        """底部面板 - 终端 + 问题"""
         self.panel_widget = QWidget()
         panel_layout = QVBoxLayout(self.panel_widget)
         panel_layout.setContentsMargins(0, 0, 0, 0)
@@ -335,90 +574,49 @@ class MainWindow(QMainWindow):
         self.panel_tabs = QTabWidget()
         self.panel_tabs.setTabsClosable(False)
         self.panel_tabs.addTab(self.log_text, "终端")
-        self.panel_tabs.addTab(QListWidget(), "问题")
-
+        self.panel_tabs.addTab(QListWidget(), "问题 (0)")
+        self.panel_tabs.setMaximumHeight(180)
         panel_layout.addWidget(self.panel_tabs)
-        self.panel_tabs.setMaximumHeight(200)
 
         self.panel_dock.setWidget(self.panel_widget)
 
-    def _setup_right_sidebar(self):
-        """右侧属性面板"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.addWidget(QLabel("属性面板（待实现）"))
-        layout.addStretch()
-        self.right_sidebar.setWidget(widget)
-
     def _setup_statusbar(self):
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
+        sb = QStatusBar()
+        self.setStatusBar(sb)
 
         self.branch_label = QLabel("  OFCC")
-        self.case_label = QLabel("无 Case")
+        self.case_label = QLabel("未选择 Case")
         self.solver_label = QLabel("求解器: -")
-        self.pos_label = QLabel("Ln 1, Col 1")
-        self.of_label = QLabel(f"OF: {self.of_env.get('version', 'unknown')}")
+        self.of_label = QLabel(f"OF: {self.of_env.get('version', '?')}")
 
-        for lbl in [self.branch_label, self.case_label, self.solver_label,
-                    self.pos_label, self.of_label]:
-            self.status_bar.addPermanentWidget(lbl)
-
-        self.status_bar.addPermanentWidget(QLabel("  "))
-        self.status_msg_label = QLabel("")
-        self.status_bar.addWidget(self.status_msg_label, 1)
+        for lbl in [self.branch_label, self.case_label, self.solver_label, self.of_label]:
+            sb.addPermanentWidget(lbl)
 
     def _setup_menu(self):
-        menubar = self.menuBar()
+        mb = self.menuBar()
 
-        file_menu = menubar.addMenu("文件")
+        file_menu = mb.addMenu("文件")
         file_menu.addAction("新建项目", self._on_new_project)
         file_menu.addAction("刷新项目", self._on_refresh_projects)
         file_menu.addSeparator()
         file_menu.addAction("退出", self.close)
 
-        project_menu = menubar.addMenu("项目")
-        project_menu.addAction("新建 Case", self._on_new_case)
-        project_menu.addAction("删除项目", self._on_delete_project)
+        proj_menu = mb.addMenu("项目")
+        proj_menu.addAction("新建 Case", self._on_new_case)
+        proj_menu.addAction("删除项目", self._on_delete_project)
 
-        solver_menu = menubar.addMenu("求解器")
+        solver_menu = mb.addMenu("求解器")
         solver_menu.addAction("运行求解", self._on_run_solver)
         solver_menu.addAction("停止求解", self._on_stop_solver)
 
-        tool_menu = menubar.addMenu("工具")
+        tool_menu = mb.addMenu("工具")
+        tool_menu.addAction("设置...", self._on_settings)
         tool_menu.addAction("环境诊断", self._on_diagnostics)
 
-        help_menu = menubar.addMenu("帮助")
+        help_menu = mb.addMenu("帮助")
         help_menu.addAction("新手教程", self._on_show_tutorial)
         help_menu.addSeparator()
         help_menu.addAction("关于", self._on_about)
-
-    # ────────────────────────────────────────────────────────────────
-    # Activity Bar & Sidebar
-    # ────────────────────────────────────────────────────────────────
-
-    def _on_activity_click(self, key: str):
-        for k, btn in self.activity_buttons.items():
-            btn.setChecked(k == key)
-        self.active_panel = key
-        self._show_sidebar_panel(key)
-        self._update_sidebar_visibility()
-
-    def _show_sidebar_panel(self, key: str):
-        if key == "explorer":
-            self.sidebar.setWidget(self._create_explorer_panel())
-        elif key == "search":
-            self.sidebar.setWidget(self._create_search_panel())
-        elif key == "simulation":
-            self.sidebar.setWidget(self._create_simulation_panel())
-        else:
-            placeholder = QWidget()
-            QVBoxLayout(placeholder).addWidget(QLabel(f"{key} 面板（待实现）"))
-            self.sidebar.setWidget(placeholder)
-
-    def _update_sidebar_visibility(self):
-        # VS Code style: sidebar is always visible next to activity bar
-        self.sidebar.show()
 
     # ────────────────────────────────────────────────────────────────
     # Project Tree
@@ -427,16 +625,18 @@ class MainWindow(QMainWindow):
     def _refresh_project_tree(self):
         self.project_tree.clear()
         projects = self.project_manager.get_all()
-        for project in projects:
-            proj_item = QTreeWidgetItem([project.name])
-            proj_item.setData(0, Qt.UserRole, {"type": "project", "id": project.id})
-            cases = self.case_manager.get_by_project(project.id)
+        for proj in projects:
+            proj_item = QTreeWidgetItem([f"📁 {proj.name}"])
+            proj_item.setData(0, Qt.UserRole, {"type": "project", "id": proj.id})
+            cases = self.case_manager.get_by_project(proj.id)
             for case in cases:
-                case_item = QTreeWidgetItem([f"{case.name} [{case.status}]"])
-                case_item.setData(0, Qt.UserRole, {"type": "case", "id": case.id, "project_id": project.id})
+                status_icon = "✅" if case.status == "completed" else "⏳" if case.status == "running" else "⏸"
+                case_item = QTreeWidgetItem([f"  {status_icon} {case.name}"])
+                case_item.setData(0, Qt.UserRole, {"type": "case", "id": case.id, "project_id": proj.id})
                 proj_item.addChild(case_item)
             self.project_tree.addTopLevelItem(proj_item)
         self.project_tree.expandAll()
+        self.log(f"项目树已刷新 ({len(projects)} 个项目)")
 
     def _on_tree_item_double_clicked(self, item, column):
         data = item.data(0, Qt.UserRole)
@@ -446,12 +646,24 @@ class MainWindow(QMainWindow):
                 self.current_case = case
                 self.current_project = self.project_manager.get_by_id(data["project_id"])
                 self._update_status()
-                self.log(f"选中 Case: {case.name}")
+                self._update_properties()
                 self.solver_combo.setCurrentText(case.solver)
-                self.editor_tabs.setCurrentIndex(1)  # 切换到求解运行页
+                self.editor_tabs.setCurrentIndex(1)
+                self.log(f"选中 Case: {case.name} ({case.solver})")
+
+    def _update_properties(self):
+        if self.current_case:
+            self.props_label.setText(
+                f"<b>{self.current_case.name}</b><br>"
+                f"求解器: {self.current_case.solver}<br>"
+                f"状态: {self.current_case.status}<br>"
+                f"路径: {self.current_case.path}"
+            )
+        else:
+            self.props_label.setText("选择 Case 查看属性")
 
     # ────────────────────────────────────────────────────────────────
-    # Project / Case Actions
+    # Actions
     # ────────────────────────────────────────────────────────────────
 
     def _on_new_project(self):
@@ -461,11 +673,11 @@ class MainWindow(QMainWindow):
 
     def _create_project(self, name: str):
         try:
-            project = self.project_manager.create(name)
+            self.project_manager.create(name)
             self._refresh_project_tree()
-            self.log(f"项目创建: {name}")
+            self.log(f"项目已创建: {name}")
         except Exception as e:
-            logger.error(f"创建项目失败: {e}")
+            logger.error(e)
             QMessageBox.critical(self, "错误", str(e))
 
     def _on_new_case(self):
@@ -479,11 +691,11 @@ class MainWindow(QMainWindow):
 
     def _create_case(self, name: str, template_path=None):
         try:
-            case = self.case_manager.create(self.current_project.id, name, template_path)
+            self.case_manager.create(self.current_project.id, name, template_path)
             self._refresh_project_tree()
-            self.log(f"Case 创建: {name}")
+            self.log(f"Case 已创建: {name}")
         except Exception as e:
-            logger.error(f"创建 Case 失败: {e}")
+            logger.error(e)
             QMessageBox.critical(self, "错误", str(e))
 
     def _on_delete_project(self):
@@ -492,72 +704,60 @@ class MainWindow(QMainWindow):
             return
         reply = QMessageBox.question(self, "确认", f"删除项目 '{self.current_project.name}'？不可恢复。")
         if reply == QMessageBox.Yes:
-            try:
-                self.project_manager.delete(self.current_project.id)
-                self.current_project = None
-                self.current_case = None
-                self._refresh_project_tree()
-                self._update_status()
-                self.log("项目已删除")
-            except Exception as e:
-                QMessageBox.critical(self, "错误", str(e))
+            self.project_manager.delete(self.current_project.id)
+            self.current_project = None
+            self.current_case = None
+            self._refresh_project_tree()
+            self._update_status()
+            self.log("项目已删除")
 
     def _on_refresh_projects(self):
         self._refresh_project_tree()
 
-    # ────────────────────────────────────────────────────────────────
-    # Task Execution
-    # ────────────────────────────────────────────────────────────────
-
     def _on_run_solver(self):
         if not self.current_case:
-            QMessageBox.warning(self, "提示", "请先在项目树中选择一个 Case")
+            QMessageBox.warning(self, "提示", "请先选择 Case")
             return
-
         solver = self.solver_combo.currentText()
-        self.log(f"启动求解器: {solver}, Case: {self.current_case.name}")
-
+        self.log(f"▶ 启动 {solver} (Case: {self.current_case.name})")
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
-
+        self.progress_bar.setValue(20)
         self.task_executor.start_task(self.current_case.id, solver, self.current_case.path)
 
     def _on_stop_solver(self):
         if self.current_case:
             self.task_executor.stop_task(self.current_case.id)
-            self.log("请求停止任务...")
+            self.log("■ 请求停止...")
 
     def _on_task_started(self, case_id: str):
-        self.log(f"[开始] case_id={case_id}")
+        self.log(f"[任务开始] case={case_id}")
 
     def _on_task_output(self, case_id: str, line: str):
+        self.run_log.append(line)
         self.log_text.append(line)
-        self.log_text.moveCursor(QTextCursor.End)
+        self.run_log.moveCursor(QTextCursor.End)
 
     def _on_task_error(self, case_id: str, line: str):
+        self.run_log.append(f"<font color='red'>{line}</font>")
         self.log_text.append(f"<font color='red'>{line}</font>")
-        self.log_text.moveCursor(QTextCursor.End)
 
     def _on_task_status_changed(self, case_id: str, status: str):
         if self.current_case and self.current_case.id == case_id:
             self.case_manager.update_status(case_id, status)
-            self.solver_label.setText(f"求解器: {status}")
+            self._refresh_project_tree()
 
-    def _on_task_finished(self, case_id: str, returncode: int, stdout: str, stderr: str):
+    def _on_task_finished(self, case_id: str, rc: int, out: str, err: str):
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.progress_bar.setVisible(False)
-
-        if returncode == 0:
-            self.log(f"[完成] case_id={case_id}")
+        if rc == 0:
+            self.log(f"✅ 完成 case={case_id}")
         else:
-            self.log(f"[失败] case_id={case_id}, returncode={returncode}")
-
+            self.log(f"❌ 失败 case={case_id} rc={rc}")
         if self.current_case and self.current_case.id == case_id:
-            status = "completed" if returncode == 0 else "failed"
-            self.case_manager.update_status(case_id, status)
+            self.case_manager.update_status(case_id, "completed" if rc == 0 else "failed")
             self._refresh_project_tree()
 
     def _on_export_log(self):
@@ -568,27 +768,30 @@ class MainWindow(QMainWindow):
                 f.write(self.log_text.toPlainText())
             self.log(f"日志已导出: {path}")
 
-    # ────────────────────────────────────────────────────────────────
-    # Status & Tutorial
-    # ────────────────────────────────────────────────────────────────
+    def _on_settings(self):
+        dialog = SettingsDialog(self.settings_manager.get_all(), self)
+        dialog.settings_changed.connect(self._on_settings_applied)
+        dialog.exec()
+
+    def _on_settings_applied(self, settings: dict):
+        for key, value in settings.items():
+            self.settings_manager.update(key, value)
+        self._apply_theme()
+        self.setFont(self._get_font())
+        self.log("设置已应用")
 
     def _update_status(self):
         if self.current_project:
+            self.breadcrumb.set_path(self.current_project.name, self.current_case.name if self.current_case else None)
             self.case_label.setText(f"项目: {self.current_project.name}")
         else:
-            self.case_label.setText("无项目")
-
+            self.breadcrumb.set_path()
+            self.case_label.setText("未选择 Case")
         if self.current_case:
             self.solver_label.setText(f"求解器: {self.current_case.solver}")
 
-        if self.of_env.get("of_installed"):
-            self.of_label.setText(f"OF: {self.of_env.get('version', 'unknown')}")
-        else:
-            self.of_label.setText("OF: 未检测到")
-
     def _show_tutorial_if_needed(self):
         if self.settings_manager.get("show_tutorial_on_startup", True):
-            from PySide6.QtCore import QTimer
             QTimer.singleShot(500, self._on_show_tutorial)
 
     def _on_show_tutorial(self):
@@ -599,10 +802,10 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _on_diagnostics(self):
-        QMessageBox.information(self, "环境诊断", f"OpenFOAM: {self.of_env.get('message', 'unknown')}")
+        QMessageBox.information(self, "环境诊断", f"OpenFOAM: {self.of_env.get('message', '')}")
 
     def _on_about(self):
-        QMessageBox.about(self, "关于", "OFCC - OpenFOAM CFD Client\n版本 0.1.0\n基于 PySide6")
+        QMessageBox.about(self, "关于", "OFCC - OpenFOAM CFD Client\n版本 0.2.0\n基于 PySide6")
 
     def log(self, message: str):
         self.log_text.append(f"[INFO] {message}")
@@ -616,7 +819,6 @@ class MainWindow(QMainWindow):
         self.task_executor.task_finished.connect(self._on_task_finished)
 
     def resizeEvent(self, event):
-        """保持活动栏与窗口同步"""
         super().resizeEvent(event)
         if self.activity_bar:
-            self.activity_bar.setFixedHeight(self.height() - self.status_bar.height() - 2)
+            self.activity_bar.setFixedHeight(self.height() - self.statusBar().height() - 2)
