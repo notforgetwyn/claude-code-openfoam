@@ -27,8 +27,10 @@ from ofcc.core.project_manager import ProjectManager, Project
 from ofcc.core.case_manager import CaseManager, Case
 from ofcc.core.template_manager import TemplateManager
 from ofcc.core.task_executor import TaskExecutor, TaskStatus
+from ofcc.core.settings_manager import SettingsManager
 from ofcc.ui.dialogs.new_project_dialog import NewProjectDialog
 from ofcc.ui.dialogs.new_case_dialog import NewCaseDialog
+from ofcc.ui.dialogs.tutorial_dialog import TutorialDialog
 from ofcc.infra.logger import get_logger
 
 logger = get_logger(__name__)
@@ -66,6 +68,7 @@ class MainWindow(QMainWindow):
         self.case_manager = CaseManager()
         self.template_manager = TemplateManager()
         self.task_executor = TaskExecutor()
+        self.settings_manager = SettingsManager()
         self._connect_task_signals()
         self._setup_ui()
         self._setup_menu()
@@ -73,6 +76,7 @@ class MainWindow(QMainWindow):
         self._setup_statusbar()
         self._refresh_project_tree()
         self._update_status()
+        self._show_tutorial_if_needed()
 
     def _connect_task_signals(self):
         self.task_executor.task_started.connect(self._on_task_started)
@@ -222,6 +226,8 @@ class MainWindow(QMainWindow):
         tool_menu.addAction("环境诊断", self._on_diagnostics)
 
         help_menu = menubar.addMenu("帮助")
+        help_menu.addAction("新手教程", self._on_show_tutorial)
+        help_menu.addSeparator()
         help_menu.addAction("关于", self._on_about)
 
     def _setup_toolbar(self):
@@ -398,6 +404,20 @@ class MainWindow(QMainWindow):
 
     def _on_diagnostics(self):
         QMessageBox.information(self, "环境诊断", f"OpenFOAM: {self.of_env['message']}")
+
+    def _show_tutorial_if_needed(self):
+        if self.settings_manager.get("show_tutorial_on_startup", True):
+            self.log("新手教程已自动弹出")
+            QTimer.singleShot(500, self._on_show_tutorial)
+
+    def _on_show_tutorial(self):
+        dialog = TutorialDialog(self)
+        dialog.closed_permanently.connect(self._on_tutorial_closed_permanently)
+        dialog.exec()
+
+    def _on_tutorial_closed_permanently(self):
+        self.settings_manager.update("show_tutorial_on_startup", False)
+        self.log("新手教程已永久关闭")
 
     def _on_about(self):
         QMessageBox.about(

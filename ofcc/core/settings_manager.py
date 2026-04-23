@@ -16,6 +16,7 @@ class SettingsManager:
         "log_level": "INFO",
         "auto_save": True,
         "expert_mode": False,
+        "show_tutorial_on_startup": True,
     }
 
     def __init__(self):
