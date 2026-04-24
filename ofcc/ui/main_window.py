@@ -187,7 +187,7 @@ class MainWindow(QMainWindow):
     def _light_stylesheet(self) -> str:
         return """
             QMainWindow { background-color: #FFFFFF; }
-            QWidget { font-family: "Microsoft YaHei", "Segoe UI", sans-serif; font-size: 10pt; }
+            QWidget { font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
             QLabel { color: #333333; }
             QPushButton {
                 background-color: #F0F0F0; border: 1px solid #CCCCCC;
@@ -237,7 +237,7 @@ class MainWindow(QMainWindow):
     def _dark_stylesheet(self) -> str:
         return """
             QMainWindow { background-color: #1E1E1E; color: #CCCCCC; }
-            QWidget { font-family: "Microsoft YaHei", "Segoe UI", sans-serif; font-size: 10pt; color: #CCCCCC; }
+            QWidget { font-family: "Microsoft YaHei", "Segoe UI", sans-serif; color: #CCCCCC; }
             QPushButton {
                 background-color: #3C3C3C; border: 1px solid #555555;
                 border-radius: 4px; padding: 4px 12px; color: #CCCCCC;

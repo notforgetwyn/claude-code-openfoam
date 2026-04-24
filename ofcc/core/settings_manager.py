@@ -8,8 +8,10 @@ logger = get_logger(__name__)
 
 class SettingsManager:
     DEFAULT_SETTINGS = {
-        "theme": "light",
+        "theme": "浅色",
         "language": "zh_CN",
+        "font_family": "Microsoft YaHei",
+        "font_size": 12,
         "default_solver": "simpleFoam",
         "workspace_path": str(Path.home() / "ofcc_workspace"),
         "openfoam_bashrc": "/home/shihuayue/openfoam/OpenFOAM-dev/etc/bashrc",
