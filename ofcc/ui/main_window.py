@@ -438,7 +438,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         search_label = QLabel("搜索面板（Ctrl+Shift+F）")
         search_label.setAlignment(Qt.AlignCenter)
-        search_label.setStyleSheet("color: #999; padding: 20px;")
+        search_label.setStyleSheet("color: #888888; padding: 20px;")
         layout.addWidget(search_label)
         layout.addStretch()
         return widget
@@ -449,7 +449,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         git_label = QLabel("Git 面板")
         git_label.setAlignment(Qt.AlignCenter)
-        git_label.setStyleSheet("color: #999; padding: 20px;")
+        git_label.setStyleSheet("color: #888888; padding: 20px;")
         layout.addWidget(git_label)
         layout.addStretch()
         return widget
@@ -460,7 +460,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         sim_label = QLabel("仿真控制面板")
         sim_label.setAlignment(Qt.AlignCenter)
-        sim_label.setStyleSheet("color: #999; padding: 20px;")
+        sim_label.setStyleSheet("color: #888888; padding: 20px;")
         layout.addWidget(sim_label)
         layout.addStretch()
         return widget
@@ -471,11 +471,11 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
 
         title = QLabel("属性")
-        title.setStyleSheet("font-weight: bold; font-size: 11px; color: #666; border-bottom: 1px solid #DDD; padding-bottom: 4px;")
+        title.setStyleSheet("font-weight: bold; font-size: 11px; color: #CCCCCC; border-bottom: 1px solid #3C3C3C; padding-bottom: 4px;")
         layout.addWidget(title)
 
         self.props_label = QLabel("选择 Case 查看属性")
-        self.props_label.setStyleSheet("color: #999; font-size: 9pt;")
+        self.props_label.setStyleSheet("color: #888888; font-size: 9pt;")
         layout.addWidget(self.props_label)
         layout.addStretch()
 
@@ -548,7 +548,7 @@ class MainWindow(QMainWindow):
 
         # ── 状态提示 ──
         self.config_status = QLabel("请先选择 Case，再配置参数")
-        self.config_status.setStyleSheet("color: #999; padding: 4px;")
+        self.config_status.setStyleSheet("color: #888888; padding: 4px;")
         layout.addWidget(self.config_status)
 
         layout.addStretch()
@@ -556,6 +556,7 @@ class MainWindow(QMainWindow):
 
     def _make_spinbox(self, min_val: float, max_val: float, default: float):
         from PySide6.QtWidgets import QDoubleSpinBox, QSpinBox
+        style = "background-color: #2D2D2D; color: #CCCCCC; border: 1px solid #555555; border-radius: 4px; padding: 2px 4px;"
         if isinstance(default, int):
             sb = QSpinBox()
             sb.setRange(int(min_val), int(max_val))
@@ -566,6 +567,7 @@ class MainWindow(QMainWindow):
             sb.setDecimals(6)
             sb.setValue(float(default))
             sb.setSingleStep(max(default * 0.1, 0.001))
+        sb.setStyleSheet(style)
         return sb
 
     def _on_save_config(self):
@@ -728,7 +730,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 16, 16, 16)
         placeholder = QLabel("结果可视化")
         placeholder.setAlignment(Qt.AlignCenter)
-        placeholder.setStyleSheet("color: #999; font-size: 14pt; padding: 40px;")
+        placeholder.setStyleSheet("color: #888888; font-size: 14pt; padding: 40px;")
         layout.addWidget(placeholder)
         layout.addStretch()
         return widget
